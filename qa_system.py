@@ -2,19 +2,22 @@ import logging
 import os
 import tempfile
 
-from haystack.document_stores import ElasticsearchDocumentStore
+from haystack.document_stores import FAISSDocumentStore, BaseDocumentStore
 from haystack.utils import fetch_archive_from_http
 from haystack.nodes import TextConverter, PreProcessor
-from haystack.nodes import BM25Retriever
+from haystack.nodes import EmbeddingRetriever, BaseRetriever
 from haystack.nodes import FARMReader
 from haystack import Pipeline
 from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import Text
+from typing import Text, Optional
+import json
 
 app = FastAPI()
-indexing_pipeline = None
-querying_pipeline = None
+indexing_pipeline: Optional[Pipeline] = None
+querying_pipeline: Optional[Pipeline] = None
+document_store: Optional[BaseDocumentStore] = None
+retriever: Optional[BaseRetriever] = None
 
 
 class Answer(BaseModel):
@@ -30,18 +33,10 @@ def init_haystack():
     logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
     logging.getLogger("haystack").setLevel(logging.DEBUG)
 
+    global document_store
+    document_store = FAISSDocumentStore(faiss_index_factory_str="Flat")
 
-    # Get the host where Elasticsearch is running, default to localhost
-    host = os.environ.get("ELASTICSEARCH_HOST", "localhost")
-
-    document_store = ElasticsearchDocumentStore(
-        host=host,
-        username="",
-        password="",
-        index="document"
-    )
-
-    document_store.delete_documents(index="document")
+    document_store.delete_documents()
 
     doc_dir = "data/build_a_scalable_question_answering_system"
 
@@ -53,15 +48,29 @@ def init_haystack():
     global indexing_pipeline
     indexing_pipeline = Pipeline()
     text_converter = TextConverter()
-    preprocessor = PreProcessor(
-        clean_whitespace=True,
-        clean_header_footer=True,
-        clean_empty_lines=True,
-        split_by="word",
-        split_length=200,
-        split_overlap=20,
-        split_respect_sentence_boundary=True,
-    )
+
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+        if config['preprocessor']['split_by'] == 'sentence':
+            preprocessor = PreProcessor(
+                clean_whitespace=True,
+                clean_header_footer=True,
+                clean_empty_lines=True,
+                split_by="sentence",
+                split_length=10,
+                split_overlap=2,
+                split_respect_sentence_boundary=False
+            )
+        else:
+            preprocessor = PreProcessor(
+                clean_whitespace=True,
+                clean_header_footer=True,
+                clean_empty_lines=True,
+                split_by="word",
+                split_length=200,
+                split_overlap=20,
+                split_respect_sentence_boundary=True,
+            )
 
     indexing_pipeline.add_node(component=text_converter, name="TextConverter", inputs=["File"])
     indexing_pipeline.add_node(component=preprocessor, name="PreProcessor", inputs=["TextConverter"])
@@ -70,9 +79,17 @@ def init_haystack():
     files_to_index = [doc_dir + "/" + f for f in os.listdir(doc_dir)]
     indexing_pipeline.run_batch(file_paths=files_to_index)
 
-    retriever = BM25Retriever(document_store=document_store)
+    global retriever
+    retriever = EmbeddingRetriever(
+        document_store=document_store,
+        embedding_model=config['retriever']['embedding_model'],
+        model_format="sentence_transformers",
+        use_gpu=True
+    )
 
-    reader = FARMReader(model_name_or_path="deepset/roberta-base-squad2", use_gpu=True)
+    document_store.update_embeddings(retriever, update_existing_embeddings=False)
+
+    reader = FARMReader(model_name_or_path=config['reader']['model_name_or_path'], use_gpu=True)
 
     global querying_pipeline
     querying_pipeline = Pipeline()
@@ -80,7 +97,7 @@ def init_haystack():
     querying_pipeline.add_node(component=reader, name="Reader", inputs=["Retriever"])
 
 
-def run_query(querying_pipeline, query):
+def run_query(querying_pipeline: Pipeline, query: str):
     prediction = querying_pipeline.run(
         query=query,
         params={
@@ -106,4 +123,8 @@ def index_answer(answer: Answer):
     tf.seek(0)
     indexing_pipeline.run_batch(file_paths=[name])
     tf.close()
+    try:
+        document_store.update_embeddings(retriever, update_existing_embeddings=False)
+    except AttributeError:
+        logging.log(logging.INFO, 'Can\'t update embeddings, document store doesn\'t support it.')
     return 'success'
