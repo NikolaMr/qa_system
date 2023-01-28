@@ -115,7 +115,7 @@ def get_answers(query: str):
     return run_query(querying_pipeline, query)
 
 
-@app.post('/answers')
+@app.post('/documents')
 def index_answer(answer: Answer):
     tf = tempfile.NamedTemporaryFile('w')
     name = tf.name
