@@ -8,7 +8,7 @@ The recommended way for starting is to:
 
 1. create a virtual environment by invoking `python -m venv venv`
 2. activating it by invoking `source venv/bin/activate` 
-3. installing reqirements by invoking `pip install -r requiremnets.txt`.
+3. installing requirements by invoking `pip install -r requirements.txt`.
 
 ## Starting the server
 To start the server, invoke `uvicorn qa_system:app --reload`. `--reload` flag is here in case you want live changes to take effect. If not, feel free to drop that flag.
