@@ -1,0 +1,1 @@
+This repo is a showcase for Haystack QA skills.
