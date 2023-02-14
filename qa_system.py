@@ -20,7 +20,7 @@ document_store: Optional[BaseDocumentStore] = None
 retriever: Optional[BaseRetriever] = None
 
 
-class Answer(BaseModel):
+class Document(BaseModel):
     text: Text
 
 
@@ -33,51 +33,44 @@ def init_haystack():
     logging.basicConfig(format="%(levelname)s - %(name)s -  %(message)s", level=logging.WARNING)
     logging.getLogger("haystack").setLevel(logging.DEBUG)
 
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+
     global document_store
-    document_store = FAISSDocumentStore(faiss_index_factory_str="Flat")
-
-    document_store.delete_documents()
-
-    doc_dir = "data/build_a_scalable_question_answering_system"
-
-    fetch_archive_from_http(
-        url="https://s3.eu-central-1.amazonaws.com/deepset.ai-farm-qa/datasets/documents/wiki_gameofthrones_txt3.zip",
-        output_dir=doc_dir
-    )
+    if os.path.exists(config['faiss_index_path']):
+        document_store = FAISSDocumentStore.load(config['faiss_index_path'])
+    else:
+        document_store = FAISSDocumentStore(faiss_index_factory_str="Flat")
 
     global indexing_pipeline
     indexing_pipeline = Pipeline()
     text_converter = TextConverter()
 
-    with open('config.json', 'r') as f:
-        config = json.load(f)
-        if config['preprocessor']['split_by'] == 'sentence':
-            preprocessor = PreProcessor(
-                clean_whitespace=True,
-                clean_header_footer=True,
-                clean_empty_lines=True,
-                split_by="sentence",
-                split_length=10,
-                split_overlap=2,
-                split_respect_sentence_boundary=False
-            )
-        else:
-            preprocessor = PreProcessor(
-                clean_whitespace=True,
-                clean_header_footer=True,
-                clean_empty_lines=True,
-                split_by="word",
-                split_length=200,
-                split_overlap=20,
-                split_respect_sentence_boundary=True,
-            )
+
+    if config['preprocessor']['split_by'] == 'sentence':
+        preprocessor = PreProcessor(
+            clean_whitespace=True,
+            clean_header_footer=True,
+            clean_empty_lines=True,
+            split_by="sentence",
+            split_length=10,
+            split_overlap=2,
+            split_respect_sentence_boundary=False
+        )
+    else:
+        preprocessor = PreProcessor(
+            clean_whitespace=True,
+            clean_header_footer=True,
+            clean_empty_lines=True,
+            split_by="word",
+            split_length=200,
+            split_overlap=20,
+            split_respect_sentence_boundary=True,
+        )
 
     indexing_pipeline.add_node(component=text_converter, name="TextConverter", inputs=["File"])
     indexing_pipeline.add_node(component=preprocessor, name="PreProcessor", inputs=["TextConverter"])
     indexing_pipeline.add_node(component=document_store, name="DocumentStore", inputs=["PreProcessor"])
-
-    files_to_index = [doc_dir + "/" + f for f in os.listdir(doc_dir)]
-    indexing_pipeline.run_batch(file_paths=files_to_index)
 
     global retriever
     retriever = EmbeddingRetriever(
@@ -87,7 +80,22 @@ def init_haystack():
         use_gpu=True
     )
 
-    document_store.update_embeddings(retriever, update_existing_embeddings=False)
+    if config['requires_indexing']:
+        document_store.delete_documents()
+
+        doc_dir = "data/build_a_scalable_question_answering_system"
+
+        fetch_archive_from_http(
+            url="https://s3.eu-central-1.amazonaws.com/deepset.ai-farm-qa/datasets/documents/wiki_gameofthrones_txt3.zip",
+            output_dir=doc_dir
+        )
+
+        files_to_index = [doc_dir + "/" + f for f in os.listdir(doc_dir)][:10]
+        indexing_pipeline.run_batch(file_paths=files_to_index)
+        document_store.update_embeddings(retriever, update_existing_embeddings=False)
+
+        if config['faiss_index_path']:
+            document_store.save(config['faiss_index_path'])
 
     reader = FARMReader(model_name_or_path=config['reader']['model_name_or_path'], use_gpu=True)
 
@@ -116,15 +124,19 @@ def get_answers(query: str):
 
 
 @app.post('/documents')
-def index_answer(answer: Answer):
+def index_document(document: Document):
     tf = tempfile.NamedTemporaryFile('w')
     name = tf.name
-    tf.write(answer.text)
+    tf.write(document.text)
     tf.seek(0)
     indexing_pipeline.run_batch(file_paths=[name])
     tf.close()
     try:
         document_store.update_embeddings(retriever, update_existing_embeddings=False)
+        with open('config.json', 'r') as f:
+            config = json.load(f)
+        if config['faiss_index_path']:
+            document_store.save(config['faiss_index_path'])
     except AttributeError:
         logging.log(logging.INFO, 'Can\'t update embeddings, document store doesn\'t support it.')
     return 'success'
