@@ -3,12 +3,13 @@
     "split_by": "sentence"
   },
   "retriever": {
-    "embedding_model": "sentence-transformers/multi-qa-mpnet-base-dot-v1"
+    "embedding_model": "ada"
   },
   "reader": {
     "model_name_or_path": "deepset/roberta-base-squad2"
   },
   "requires_indexing": false,
-  "embedding_size": 1536,
-  "faiss_index_path": "faiss_document_store.faiss"
+  "embedding_size": 1024,
+  "faiss_index_path": "faiss_document_store.faiss",
+  "pinecone_index_name": "openai-qa-develop"
 }
